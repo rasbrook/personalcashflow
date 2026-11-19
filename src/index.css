@@ -2,8 +2,13 @@
 
 :root {
   font-family: 'DM Sans', 'Segoe UI', sans-serif;
-  color: #29352d;
-  background: #f7f8f5;
+  --color-black: #000000;
+  --color-navy: #14213d;
+  --color-orange: #fca311;
+  --color-gray: #e5e5e5;
+  --color-white: #ffffff;
+  color: var(--color-navy);
+  background: var(--color-gray);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -15,5 +20,5 @@
 * { box-sizing: border-box; }
 body { min-width: 360px; min-height: 100vh; margin: 0; }
 button, input, select { font: inherit; }
-button:focus-visible, a:focus-visible { outline: 2px solid #78a67d; outline-offset: 3px; }
-::selection { color: #24432e; background: #dcedd9; }
+button:focus-visible, a:focus-visible { outline: 2px solid var(--color-orange); outline-offset: 3px; }
+::selection { color: var(--color-black); background: var(--color-orange); }
