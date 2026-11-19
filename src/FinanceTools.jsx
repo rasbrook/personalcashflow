@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import {
   calculateIncomeAllocation,
   calculateSafeToSpend,
+  calculateWeeklySpendingLimit,
   estimateDebtPayoff,
   getBudgetAlert,
   getDateKey,
@@ -9,10 +10,39 @@ import {
   getSavingsContributionsInPeriod,
   getSavingsGoalProgress,
   getUpcomingCashflows,
+  getWeeklySpending,
   parseDate,
 } from './lib/finance.js'
 
 const todayDate = getDateKey(new Date())
+const bucketCategories = [
+  ['business', 'Business costs'],
+  ['bills', 'Bills'],
+  ['needs', 'Essentials'],
+  ['wants', 'Everyday spending'],
+  ['savings', 'Savings'],
+  ['debt', 'Debt payments'],
+  ['trading', 'Trading capital'],
+  ['tax', 'Tax reserve'],
+]
+
+function getBucketLabel(category) {
+  return bucketCategories.find(([value]) => value === category)?.[1] ?? category
+}
+
+function getSavingsCommitment(goals, transactions, horizonDays) {
+  const today = parseDate(todayDate)
+  const monthStart = new Date(today.getFullYear(), today.getMonth(), 1)
+  const nextMonthStart = new Date(today.getFullYear(), today.getMonth() + 1, 1)
+  const commitmentPeriods = Math.max(1, Math.ceil(horizonDays / 30.4375))
+  return goals.reduce((total, goal) => {
+    const progress = getSavingsGoalProgress(goal, transactions)
+    const plan = getSavingsContributionPlan(goal, progress, today)
+    const contributedThisMonth = getSavingsContributionsInPeriod(goal, transactions, monthStart, nextMonthStart)
+    const plannedThroughHorizon = Math.min(goal.target_amount - progress, plan.monthlyAmount * commitmentPeriods)
+    return total + Math.max(0, plannedThroughHorizon - contributedThisMonth)
+  }, 0)
+}
 
 function formatMoney(value) {
   return new Intl.NumberFormat('en-UG', {
@@ -44,6 +74,7 @@ function FinanceTools({
   user,
   settings,
   cashflows,
+  moneyBuckets,
   budgets,
   budgetItems,
   goals,
@@ -54,6 +85,9 @@ function FinanceTools({
   onSaveSettings,
   onAddCashflow,
   onDeleteCashflow,
+  onAddBucket,
+  onUpdateBucket,
+  onDeleteBucket,
   onSaveBudget,
   onResetBudget,
   onAddGoal,
@@ -64,15 +98,23 @@ function FinanceTools({
   onMarkWeeklyReview,
   onAddSavings,
 }) {
-  const [cashForm, setCashForm] = useState(() => ({ cash_balance: String(settings.cash_balance), reserve_target: String(settings.reserve_target) }))
+  const [reserveTarget, setReserveTarget] = useState(String(settings.reserve_target))
   const [allocationForm, setAllocationForm] = useState(() => ({
+    business_percent: String(settings.business_percent),
+    bills_percent: String(settings.bills_percent),
     needs_percent: String(settings.needs_percent),
     wants_percent: String(settings.wants_percent),
     savings_percent: String(settings.savings_percent),
     debt_percent: String(settings.debt_percent),
+    trading_percent: String(settings.trading_percent),
+    tax_percent: String(settings.tax_percent),
   }))
+  const [payoutAmount, setPayoutAmount] = useState('')
   const [debtBudget, setDebtBudget] = useState(() => String(settings.debt_monthly_budget))
+  const [weeklyOverride, setWeeklyOverride] = useState(settings.weekly_spending_override == null ? '' : String(settings.weekly_spending_override))
   const [allocationError, setAllocationError] = useState('')
+  const [bucketForm, setBucketForm] = useState({ name: '', category: 'wants', balance: '' })
+  const [bucketEdits, setBucketEdits] = useState({})
   const [scheduleForm, setScheduleForm] = useState({ name: '', amount: '', direction: 'expense', next_date: todayDate, recurrence: 'monthly' })
   const [goalForm, setGoalForm] = useState({ name: 'Emergency fund', target_amount: '', target_date: '' })
   const [debtForm, setDebtForm] = useState({ name: '', balance: '', minimum_payment: '', annual_interest_rate: '0', next_due_date: '' })
@@ -81,7 +123,7 @@ function FinanceTools({
   const [saving, setSaving] = useState('')
   const [reviewMessage, setReviewMessage] = useState('')
 
-  const upcoming = useMemo(() => {
+  const scheduledItems = useMemo(() => {
     const debtDues = debts
       .filter((debt) => debt.next_due_date && Number(debt.minimum_payment) > 0)
       .map((debt) => ({
@@ -94,26 +136,54 @@ function FinanceTools({
         active: true,
         debt_payment: true,
       }))
-    return getUpcomingCashflows([...cashflows, ...debtDues])
+    return [...cashflows, ...debtDues]
   }, [cashflows, debts])
-  const plannedSavings = useMemo(() => {
-    const today = parseDate(todayDate)
-    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1)
-    const nextMonthStart = new Date(today.getFullYear(), today.getMonth() + 1, 1)
-    return goals.reduce((total, goal) => {
-      const progress = getSavingsGoalProgress(goal, transactions)
-      const plan = getSavingsContributionPlan(goal, progress, today)
-      const contributedThisMonth = getSavingsContributionsInPeriod(goal, transactions, monthStart, nextMonthStart)
-      return total + Math.max(0, plan.monthlyAmount - contributedThisMonth)
-    }, 0)
-  }, [goals, transactions])
-  const forecast = useMemo(
-    () => calculateSafeToSpend({ ...settings, planned_savings_contribution: plannedSavings }, upcoming),
-    [settings, upcoming, plannedSavings],
+  const upcoming = useMemo(
+    () => getUpcomingCashflows(scheduledItems, parseDate(todayDate)),
+    [scheduledItems],
   )
+  const possibleIncome = useMemo(
+    () => getUpcomingCashflows(scheduledItems, parseDate(todayDate), 90).find((item) => item.direction === 'income'),
+    [scheduledItems],
+  )
+  const daysUntilIncome = possibleIncome
+    ? Math.max(7, Math.ceil((parseDate(possibleIncome.occurrence_date) - parseDate(todayDate)) / (24 * 60 * 60 * 1000)))
+    : 28
+  const weeklyHorizonDays = Math.min(90, daysUntilIncome)
+  const weeklyUpcoming = useMemo(
+    () => getUpcomingCashflows(scheduledItems, parseDate(todayDate), weeklyHorizonDays),
+    [scheduledItems, weeklyHorizonDays],
+  )
+  const plannedSavings = useMemo(() => {
+    return getSavingsCommitment(goals, transactions, 30)
+  }, [goals, transactions])
+  const weeklySavingsPlan = useMemo(
+    () => getSavingsCommitment(goals, transactions, weeklyHorizonDays),
+    [goals, transactions, weeklyHorizonDays],
+  )
+  const forecast = useMemo(
+    () => calculateSafeToSpend({ ...settings, money_buckets: moneyBuckets, planned_savings_contribution: plannedSavings }, upcoming),
+    [settings, moneyBuckets, upcoming, plannedSavings],
+  )
+  const weeklyForecast = useMemo(
+    () => calculateSafeToSpend({ ...settings, money_buckets: moneyBuckets, planned_savings_contribution: weeklySavingsPlan }, weeklyUpcoming),
+    [settings, moneyBuckets, weeklyUpcoming, weeklySavingsPlan],
+  )
+  const weeklySpent = getWeeklySpending(transactions, parseDate(todayDate))
+  const weeklyLimit = calculateWeeklySpendingLimit(
+    weeklyForecast.safeToSpend,
+    settings.weekly_spending_override,
+    possibleIncome?.occurrence_date,
+    parseDate(todayDate),
+  )
+  const weeklyRemaining = weeklyLimit.limit - weeklySpent
   const personalIncome = Math.max(0, totals.income - totals.businessCosts)
-  const allocation = calculateIncomeAllocation(personalIncome, settings)
-  const plannedDebtPayment = Number(settings.debt_monthly_budget) || allocation.debt
+  const payoutAllocation = calculateIncomeAllocation(Number(payoutAmount) || 0, {
+    ...settings,
+    ...Object.fromEntries(Object.entries(allocationForm).map(([key, value]) => [key, Number(value) || 0])),
+  })
+  const monthlyDebtAllocation = calculateIncomeAllocation(personalIncome, settings).debt
+  const plannedDebtPayment = Number(settings.debt_monthly_budget) || monthlyDebtAllocation
   const payoff = estimateDebtPayoff(debts, plannedDebtPayment)
   const allocationTotal = Object.values(allocationForm).reduce((total, value) => total + (Number(value) || 0), 0)
 
@@ -121,8 +191,7 @@ function FinanceTools({
     event.preventDefault()
     setSaving('settings')
     await onSaveSettings({
-      cash_balance: Number(cashForm.cash_balance),
-      reserve_target: Number(cashForm.reserve_target),
+      reserve_target: Number(reserveTarget),
     })
     setSaving('')
   }
@@ -130,14 +199,37 @@ function FinanceTools({
   async function submitAllocation(event) {
     event.preventDefault()
     if (Math.abs(allocationTotal - 100) > 0.001) {
-      setAllocationError('The four allocation percentages must total 100%.')
+      setAllocationError('The payout allocation percentages must total 100%.')
       return
     }
     setAllocationError('')
     setSaving('allocation')
     await onSaveSettings({
       ...Object.fromEntries(Object.entries(allocationForm).map(([key, value]) => [key, Number(value)])),
-      debt_monthly_budget: Number(debtBudget),
+    })
+    setSaving('')
+  }
+
+  async function submitBucket(event) {
+    event.preventDefault()
+    setSaving('bucket')
+    const saved = await onAddBucket({ ...bucketForm, balance: Number(bucketForm.balance) })
+    if (saved) setBucketForm({ name: '', category: 'wants', balance: '' })
+    setSaving('')
+  }
+
+  async function updateBucket(event, bucket) {
+    event.preventDefault()
+    setSaving(`bucket-${bucket.id}`)
+    await onUpdateBucket(bucket.id, Number(bucketEdits[bucket.id] ?? bucket.balance))
+    setSaving('')
+  }
+
+  async function submitWeeklyLimit(event) {
+    event.preventDefault()
+    setSaving('weekly-limit')
+    await onSaveSettings({
+      weekly_spending_override: weeklyOverride === '' ? null : Number(weeklyOverride),
     })
     setSaving('')
   }
@@ -182,46 +274,89 @@ function FinanceTools({
   return (
     <div className="finance-tools">
       <section className="tool-grid">
-        <ToolCard title="Safe to spend" description="A 30-day estimate using your cash balance, reserve, known cashflows, and savings commitments." className="safe-to-spend-card">
+        <ToolCard title="Safe to spend in 30 days" description="Uses tagged account balances, scheduled bills, a protected reserve, and savings goals." className="safe-to-spend-card">
           <div className="safe-spend-amount">{formatMoney(forecast.safeToSpend)}</div>
-          <p className="safe-spend-caption">Available above your reserve after scheduled items</p>
+          <p className="safe-spend-caption">Estimated amount left for personal spending after planned commitments</p>
           {forecast.reserveShortfall > 0 && <p className="tool-warning">Your forecast is {formatMoney(forecast.reserveShortfall)} below your reserve target.</p>}
           <div className="forecast-breakdown">
-            <span>Current cash <strong>{formatMoney(settings.cash_balance)}</strong></span>
+            <span>Current account balances <strong>{formatMoney(forecast.totalCash)}</strong></span>
             <span>Expected income <strong>{formatMoney(forecast.scheduledIncome)}</strong></span>
             <span>Bills and debt minimums <strong>{formatMoney(forecast.upcomingExpenses)}</strong></span>
+            {moneyBuckets.length > 0 && <span>Bills not yet covered by the bills bucket <strong>{formatMoney(forecast.uncoveredBills)}</strong></span>}
+            {moneyBuckets.length > 0 && <span>Debt minimums not covered by the debt bucket <strong>{formatMoney(forecast.uncoveredDebtPayments)}</strong></span>}
             <span>Planned savings <strong>{formatMoney(forecast.plannedSavings)}</strong></span>
             <span>Projected after 30 days <strong>{formatMoney(forecast.projectedBalance)}</strong></span>
           </div>
           <form className="tool-form two-column-form" onSubmit={submitSettings}>
-            <InputField label="Cash available now (UGX)" type="number" min="0" step="1" required value={cashForm.cash_balance} onChange={(event) => setCashForm({ ...cashForm, cash_balance: event.target.value })} />
-            <InputField label="Minimum reserve (UGX)" type="number" min="0" step="1" required value={cashForm.reserve_target} onChange={(event) => setCashForm({ ...cashForm, reserve_target: event.target.value })} />
+            <InputField label="Protected reserve target (UGX)" type="number" min="0" step="1" required value={reserveTarget} onChange={(event) => setReserveTarget(event.target.value)} />
             <button className="primary-button tool-submit" type="submit" disabled={saving === 'settings'}>{saving === 'settings' ? 'Saving…' : 'Update cash plan'}</button>
           </form>
-          <p className="tool-footnote">Update cash available manually. The estimate uses confirmed scheduled income only; it is not a bank balance or guarantee.</p>
+          <p className="tool-footnote">{moneyBuckets.length ? 'Balances are manual; update each account after money moves.' : `No accounts added yet. Using the previous manual balance of ${formatMoney(settings.cash_balance)} until you add buckets.`} When you add your first bucket, include every account and wallet so the forecast has a complete balance. Only confirmed scheduled income is counted.</p>
         </ToolCard>
 
-        <ToolCard title="Split this month’s income" description="Plan how to use income after recorded business costs. Change the percentages to suit your priorities.">
-          <div className="allocation-total"><span>Personal income to plan</span><strong>{formatMoney(personalIncome)}</strong></div>
+        <ToolCard title="Accounts and money buckets" description="Track each bank account, mobile-money wallet, or cash holding once, and assign it to the purpose you use it for.">
+          <div className="bucket-balance-total"><span>Total tracked balances</span><strong>{formatMoney(moneyBuckets.length ? forecast.totalCash : settings.cash_balance)}</strong></div>
+          <form className="tool-form bucket-form" onSubmit={submitBucket}>
+            <InputField label="Account or wallet name" required maxLength={80} value={bucketForm.name} onChange={(event) => setBucketForm({ ...bucketForm, name: event.target.value })} placeholder="e.g. Mobile money wallet" />
+            <div className="two-column-form">
+              <InputField label="Purpose"><select value={bucketForm.category} onChange={(event) => setBucketForm({ ...bucketForm, category: event.target.value })}>{bucketCategories.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></InputField>
+              <InputField label="Current balance (UGX)" type="number" min="0" step="1" required value={bucketForm.balance} onChange={(event) => setBucketForm({ ...bucketForm, balance: event.target.value })} />
+            </div>
+            <button className="primary-button tool-submit" type="submit" disabled={saving === 'bucket'}>{saving === 'bucket' ? 'Adding…' : 'Add account or wallet'}</button>
+          </form>
+          <div className="bucket-list">
+            {moneyBuckets.length ? moneyBuckets.map((bucket) => (
+              <form className="bucket-row" key={bucket.id} onSubmit={(event) => updateBucket(event, bucket)}>
+                <div><strong>{bucket.name}</strong><span>{getBucketLabel(bucket.category)}</span></div>
+                <InputField label={`${bucket.name} balance (UGX)`} type="number" min="0" step="1" required value={bucketEdits[bucket.id] ?? String(bucket.balance)} onChange={(event) => setBucketEdits({ ...bucketEdits, [bucket.id]: event.target.value })} />
+                <button className="secondary-button" type="submit" disabled={saving === `bucket-${bucket.id}`}>{saving === `bucket-${bucket.id}` ? 'Saving…' : 'Update'}</button>
+                <button className="tool-delete" type="button" onClick={() => onDeleteBucket(bucket.id)} aria-label={`Delete ${bucket.name}`}>×</button>
+              </form>
+            )) : <p className="empty-transactions">Add your bank, mobile-money, and cash balances to start using purpose-based buckets.</p>}
+          </div>
+          <p className="tool-footnote">Add each real balance once—do not enter the same wallet in multiple buckets. These are manual records, not bank connections.</p>
+        </ToolCard>
+
+        <ToolCard title="Split each payout" description="Enter a payout to see your personal allocation plan. Percentages are yours to set; the app never moves money automatically.">
+          <InputField label="Payout received (UGX)" type="number" min="0" step="1" value={payoutAmount} onChange={(event) => setPayoutAmount(event.target.value)} placeholder="Enter a payout amount" />
           <div className="allocation-list">
-            {[
-              ['Needs', allocation.needs],
-              ['Wants', allocation.wants],
-              ['Savings', allocation.savings],
-              ['Debt', allocation.debt],
-            ].map(([label, amount]) => <div className="allocation-row" key={label}><span>{label}</span><strong>{formatMoney(amount)}</strong></div>)}
+            {bucketCategories.map(([category, label]) => (
+              <div className="allocation-row" key={category}><span>{label}</span><strong>{formatMoney(payoutAllocation[category])}</strong></div>
+            ))}
           </div>
           <form className="tool-form allocation-form" onSubmit={submitAllocation}>
             {[
-              ['needs_percent', 'Needs %'],
-              ['wants_percent', 'Wants %'],
+              ['business_percent', 'Business costs %'],
+              ['bills_percent', 'Bills %'],
+              ['needs_percent', 'Essentials %'],
+              ['wants_percent', 'Everyday spending %'],
               ['savings_percent', 'Savings %'],
               ['debt_percent', 'Debt %'],
+              ['trading_percent', 'Trading capital %'],
+              ['tax_percent', 'Tax reserve %'],
             ].map(([key, label]) => <InputField key={key} label={label} type="number" min="0" max="100" step="0.1" required value={allocationForm[key]} onChange={(event) => setAllocationForm({ ...allocationForm, [key]: event.target.value })} />)}
             <p className={`allocation-total-note ${allocationError ? 'tool-warning' : ''}`}>{allocationError || `Allocation total: ${allocationTotal.toFixed(1)}% (must be 100%)`}</p>
-            <InputField label="Monthly debt payment plan (UGX)" type="number" min="0" step="1" required value={debtBudget} onChange={(event) => setDebtBudget(event.target.value)} />
-            <button className="primary-button tool-submit" type="submit" disabled={saving === 'allocation'}>{saving === 'allocation' ? 'Saving…' : 'Save my plan'}</button>
+            <button className="primary-button tool-submit" type="submit" disabled={saving === 'allocation'}>{saving === 'allocation' ? 'Saving…' : 'Save payout split'}</button>
           </form>
+          <p className="tool-footnote">Tax is optional and starts at 0%. Choose a reserve percentage based on your own tax guidance. Transfer amounts yourself, then update bucket balances.</p>
+        </ToolCard>
+
+        <ToolCard title="Weekly spending limit" description="Set a cap or use the suggested amount based on safe-to-spend money and your next confirmed payout.">
+          <div className="weekly-limit-amount">{formatMoney(weeklyLimit.limit)}<span> for this week</span></div>
+          <div className="weekly-review-grid">
+            <div><span>Suggested weekly amount</span><strong>{formatMoney(weeklyLimit.suggested)}</strong></div>
+            <div><span>Needs + wants recorded</span><strong>{formatMoney(weeklySpent)}</strong></div>
+          </div>
+          <p className={weeklyRemaining < 0 ? 'tool-warning' : 'weekly-insight'}>
+            {weeklyRemaining < 0
+              ? `You are ${formatMoney(Math.abs(weeklyRemaining))} over this week’s limit.`
+              : `${formatMoney(weeklyRemaining)} remains in this week’s spending limit.`}
+          </p>
+          <form className="tool-form weekly-limit-form" onSubmit={submitWeeklyLimit}>
+            <InputField label="Your weekly override (UGX, optional)" type="number" min="0" step="1" value={weeklyOverride} onChange={(event) => setWeeklyOverride(event.target.value)} placeholder="Leave blank to use suggestion" />
+            <button className="secondary-button" type="submit" disabled={saving === 'weekly-limit'}>{saving === 'weekly-limit' ? 'Saving…' : weeklyOverride === '' ? 'Use suggested amount' : 'Save weekly limit'}</button>
+          </form>
+          <p className="tool-footnote">{possibleIncome ? `Next confirmed income is scheduled for ${formatDate(possibleIncome.occurrence_date)}.` : 'No confirmed income is scheduled in the next 90 days; the suggestion spreads your safe amount across four weeks.'} Weekly spending counts transactions categorized as essentials or everyday spending. Transfers and business costs are excluded.</p>
         </ToolCard>
 
         <ToolCard title="Bills and income calendar" description="Schedule known bills and confirmed income. In-app reminders show what is coming up.">

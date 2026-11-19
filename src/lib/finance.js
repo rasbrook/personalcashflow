@@ -79,9 +79,50 @@ export function calculateSafeToSpend(settings, upcomingCashflows) {
   const upcomingExpenses = upcomingCashflows
     .filter((item) => item.direction === 'expense')
     .reduce((total, item) => total + Number(item.amount), 0)
+  const upcomingDebtPayments = upcomingCashflows
+    .filter((item) => item.direction === 'expense' && item.debt_payment)
+    .reduce((total, item) => total + Number(item.amount), 0)
+  const upcomingBills = upcomingExpenses - upcomingDebtPayments
   const plannedSavings = Number(settings.planned_savings_contribution ?? 0)
-  const projectedBalance = Number(settings.cash_balance) + scheduledIncome - upcomingExpenses - plannedSavings
   const reserveTarget = Number(settings.reserve_target)
+  const buckets = settings.money_buckets ?? []
+  const hasBuckets = buckets.length > 0
+  const bucketTotals = buckets.reduce((totals, bucket) => {
+    totals[bucket.category] = (totals[bucket.category] ?? 0) + Number(bucket.balance)
+    return totals
+  }, {})
+  const totalCash = hasBuckets
+    ? buckets.reduce((total, bucket) => total + Number(bucket.balance), 0)
+    : Number(settings.cash_balance)
+  const allocatedIncome = upcomingCashflows
+    .filter((item) => item.direction === 'income')
+    .reduce((totals, item) => {
+      const allocation = calculateIncomeAllocation(Number(item.amount), settings)
+      for (const [category, amount] of Object.entries(allocation)) {
+        totals[category] = (totals[category] ?? 0) + amount
+      }
+      return totals
+    }, {})
+  const projectedBalance = totalCash + scheduledIncome - upcomingExpenses - plannedSavings
+  const reserveShortfall = hasBuckets
+    ? Math.max(0, reserveTarget - (bucketTotals.savings ?? 0) - (allocatedIncome.savings ?? 0))
+    : Math.max(0, reserveTarget - projectedBalance)
+  const uncoveredBills = Math.max(
+    0,
+    upcomingBills - (bucketTotals.bills ?? 0) - (allocatedIncome.bills ?? 0),
+  )
+  const uncoveredDebtPayments = Math.max(
+    0,
+    upcomingDebtPayments - (bucketTotals.debt ?? 0) - (allocatedIncome.debt ?? 0),
+  )
+  const remainingSavingsPlan = Math.max(0, plannedSavings - (allocatedIncome.savings ?? 0))
+  const spendableBalance = hasBuckets
+    ? (bucketTotals.needs ?? 0) + (bucketTotals.wants ?? 0)
+      + (allocatedIncome.needs ?? 0) + (allocatedIncome.wants ?? 0)
+    : totalCash + scheduledIncome
+  const safeToSpend = hasBuckets
+    ? Math.max(0, spendableBalance - uncoveredBills - uncoveredDebtPayments - remainingSavingsPlan - reserveShortfall)
+    : Math.max(0, projectedBalance - reserveTarget)
 
   return {
     scheduledIncome,
@@ -89,22 +130,41 @@ export function calculateSafeToSpend(settings, upcomingCashflows) {
     plannedSavings,
     projectedBalance,
     reserveTarget,
-    safeToSpend: Math.max(0, projectedBalance - reserveTarget),
-    reserveShortfall: Math.max(0, reserveTarget - projectedBalance),
+    totalCash,
+    bucketTotals,
+    uncoveredBills,
+    uncoveredDebtPayments,
+    safeToSpend,
+    reserveShortfall,
   }
 }
 
 export function calculateIncomeAllocation(netIncome, settings) {
   const base = Math.max(0, Math.floor(netIncome))
-  const needs = Math.round(base * Number(settings.needs_percent) / 100)
-  const wants = Math.round(base * Number(settings.wants_percent) / 100)
-  const savings = Math.round(base * Number(settings.savings_percent) / 100)
+  const categories = [
+    ['business', 'business_percent'],
+    ['bills', 'bills_percent'],
+    ['needs', 'needs_percent'],
+    ['wants', 'wants_percent'],
+    ['savings', 'savings_percent'],
+    ['debt', 'debt_percent'],
+    ['trading', 'trading_percent'],
+    ['tax', 'tax_percent'],
+  ]
+  const shares = categories.map(([category, percentage], index) => {
+    const raw = base * Number(settings[percentage] ?? 0) / 100
+    return { category, index, amount: Math.floor(raw), remainder: raw - Math.floor(raw) }
+  })
+  let remaining = base - shares.reduce((total, share) => total + share.amount, 0)
+  for (const share of [...shares].sort((left, right) => right.remainder - left.remainder || left.index - right.index)) {
+    if (remaining <= 0) break
+    share.amount += 1
+    remaining -= 1
+  }
+  const amounts = Object.fromEntries(shares.map(({ category, amount }) => [category, amount]))
   return {
-    needs,
-    wants,
-    savings,
-    debt: base - needs - wants - savings,
     total: base,
+    ...amounts,
   }
 }
 
@@ -133,6 +193,32 @@ export function getWeeklySummary(transactions, now = new Date()) {
     net: thisWeek.income - thisWeek.outflow,
     spendingChange: thisWeek.outflow - lastWeek.outflow,
   }
+}
+
+export function getWeeklySpending(transactions, now = new Date()) {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const start = new Date(today)
+  start.setDate(today.getDate() - 6)
+  const end = new Date(today.getTime() + 24 * 60 * 60 * 1000)
+  return transactions
+    .filter((transaction) => ['needs', 'wants'].includes(transaction.type))
+    .filter((transaction) => {
+      const date = getTransactionDate(transaction)
+      return date >= start && date < end
+    })
+    .reduce((total, transaction) => total + transaction.amount, 0)
+}
+
+export function calculateWeeklySpendingLimit(safeToSpend, override, nextIncomeDate, now = new Date()) {
+  const nextIncome = nextIncomeDate ? parseDate(nextIncomeDate) : null
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const daysUntilIncome = nextIncome
+    ? Math.max(0, Math.ceil((nextIncome - today) / (24 * 60 * 60 * 1000)))
+    : 28
+  const weeksUntilIncome = Math.max(1, Math.ceil(daysUntilIncome / 7))
+  const suggested = Math.floor(Math.max(0, safeToSpend) / weeksUntilIncome)
+  const limit = override === null || override === '' ? suggested : Number(override)
+  return { suggested, limit, weeksUntilIncome }
 }
 
 export function getBudgetAlert(spent, limit) {

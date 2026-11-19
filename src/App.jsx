@@ -159,7 +159,7 @@ function BackendSetup() {
         <ol className="setup-steps">
           <li>Copy <code>.env.example</code> to <code>.env.local</code>.</li>
           <li>Add your Supabase project URL and publishable key.</li>
-          <li>Run both SQL migrations in <code>supabase/migrations</code> in the Supabase SQL Editor, in date order.</li>
+          <li>Run all SQL migrations in <code>supabase/migrations</code> in the Supabase SQL Editor, in date order.</li>
           <li>Restart the development server.</li>
         </ol>
         <p className="setup-security">Use a publishable key only. Never put a Supabase secret or service-role key in the browser app.</p>
@@ -195,6 +195,7 @@ function App() {
   const [transactions, setTransactions] = useState([])
   const [financeSettings, setFinanceSettings] = useState(null)
   const [plannedCashflows, setPlannedCashflows] = useState([])
+  const [moneyBuckets, setMoneyBuckets] = useState([])
   const [monthlyBudgets, setMonthlyBudgets] = useState([])
   const [savingsGoals, setSavingsGoals] = useState([])
   const [debtAccounts, setDebtAccounts] = useState([])
@@ -222,6 +223,7 @@ function App() {
       setTransactions([])
       setFinanceSettings(null)
       setPlannedCashflows([])
+      setMoneyBuckets([])
       setMonthlyBudgets([])
       setSavingsGoals([])
       setDebtAccounts([])
@@ -277,14 +279,15 @@ function App() {
     let active = true
     async function loadFinanceTools() {
       try {
-        const [settingsResult, cashflowsResult, budgetsResult, goalsResult, debtsResult] = await Promise.all([
+        const [settingsResult, cashflowsResult, bucketsResult, budgetsResult, goalsResult, debtsResult] = await Promise.all([
           supabase.from('user_finance_settings').select('*').maybeSingle(),
           supabase.from('planned_cashflows').select('*').order('next_date'),
+          supabase.from('money_buckets').select('*').order('created_at'),
           supabase.from('monthly_budgets').select('*'),
           supabase.from('savings_goals').select('*').order('created_at', { ascending: false }),
           supabase.from('debt_accounts').select('*').order('created_at', { ascending: false }),
         ])
-        for (const result of [settingsResult, cashflowsResult, budgetsResult, goalsResult, debtsResult]) {
+        for (const result of [settingsResult, cashflowsResult, bucketsResult, budgetsResult, goalsResult, debtsResult]) {
           if (result.error) throw result.error
         }
 
@@ -302,6 +305,7 @@ function App() {
         if (!active) return
         setFinanceSettings(settings)
         setPlannedCashflows(cashflowsResult.data)
+        setMoneyBuckets(bucketsResult.data)
         setMonthlyBudgets(budgetsResult.data)
         setSavingsGoals(goalsResult.data)
         setDebtAccounts(debtsResult.data)
@@ -500,6 +504,45 @@ function App() {
     return runFinanceRequest(
       () => supabase.from('planned_cashflows').delete().eq('id', id),
       () => setPlannedCashflows((current) => current.filter((item) => item.id !== id)),
+    )
+  }
+
+  async function addMoneyBucket(bucket) {
+    const categories = ['business', 'bills', 'needs', 'wants', 'savings', 'debt', 'trading', 'tax']
+    if (!bucket.name.trim() || !categories.includes(bucket.category)
+      || !Number.isSafeInteger(bucket.balance) || bucket.balance < 0) {
+      setError('Enter an account name, choose a purpose, and enter a whole-number balance of zero or more.')
+      return false
+    }
+    return runFinanceRequest(
+      () => supabase.from('money_buckets')
+        .insert({ ...bucket, name: bucket.name.trim(), user_id: user.id })
+        .select('*')
+        .single(),
+      (data) => setMoneyBuckets((current) => [...current, data]),
+    )
+  }
+
+  async function updateMoneyBucket(id, balance) {
+    if (!Number.isSafeInteger(balance) || balance < 0) {
+      setError('Enter a whole-number account balance of zero or more.')
+      return false
+    }
+    return runFinanceRequest(
+      () => supabase.from('money_buckets')
+        .update({ balance, updated_at: new Date().toISOString() })
+        .eq('id', id)
+        .select('*')
+        .single(),
+      (data) => setMoneyBuckets((current) => current.map((bucket) => bucket.id === id ? data : bucket)),
+    )
+  }
+
+  async function deleteMoneyBucket(id) {
+    if (!window.confirm('Delete this account bucket?')) return false
+    return runFinanceRequest(
+      () => supabase.from('money_buckets').delete().eq('id', id),
+      () => setMoneyBuckets((current) => current.filter((bucket) => bucket.id !== id)),
     )
   }
 
@@ -744,6 +787,7 @@ function App() {
               user={user}
               settings={financeSettings}
               cashflows={plannedCashflows}
+              moneyBuckets={moneyBuckets}
               budgets={monthlyBudgets}
               budgetItems={budgetItems}
               goals={savingsGoals}
@@ -754,6 +798,9 @@ function App() {
               onSaveSettings={saveFinanceSettings}
               onAddCashflow={addPlannedCashflow}
               onDeleteCashflow={deletePlannedCashflow}
+              onAddBucket={addMoneyBucket}
+              onUpdateBucket={updateMoneyBucket}
+              onDeleteBucket={deleteMoneyBucket}
               onSaveBudget={saveMonthlyBudget}
               onResetBudget={resetMonthlyBudget}
               onAddGoal={addSavingsGoal}
@@ -764,7 +811,7 @@ function App() {
               onMarkWeeklyReview={markWeeklyReview}
               onAddSavings={startSavingsContribution}
             />
-            : <section className="panel planner-migration-note"><h2>Set up your money tools</h2><p>Run <code>supabase/migrations/20261119000000_add_money_management_tools.sql</code> in your Supabase SQL Editor, then reload the app.</p></section>)}
+            : <section className="panel planner-migration-note"><h2>Set up your money tools</h2><p>Run all SQL migrations in <code>supabase/migrations</code> in your Supabase SQL Editor, in date order, then reload the app.</p></section>)}
 
           {activePage === 'Budgets' && <><div className="trader-note"><span className="trader-note-icon"><Icon name="chart" size={17} /></span><p>The 50 / 30 / 20 guide uses income after trading and creator costs. With variable earnings, use it as a flexible starting point—not a fixed rule.</p></div><section className="budget-page-grid">{budgetItems.map((item) => <article className="panel budget-detail-card" key={item.name}><div className={`budget-icon ${item.color}`}><Icon name={item.icon} size={18} /></div><p className="card-label">{item.name.toUpperCase()}</p><h2>{formatMoney(item.spent)}<small> / {formatMoney(item.limit)}</small></h2><p className="page-subtitle">{item.note}</p><div className="progress-track"><span className={item.color} style={{ width: `${item.limit ? Math.min(100, item.spent / item.limit * 100) : 0}%` }} /></div><p className="budget-remaining">{formatMoney(Math.max(0, item.limit - item.spent))} left this month</p></article>)}</section></>}
 

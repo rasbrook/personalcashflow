@@ -449,6 +449,17 @@ h1, h2, p { margin-top: 0; }
 .allocation-form .allocation-total-note { grid-column: 1 / -1; margin: 0; color: rgba(20, 33, 61, .66); font-size: 9px; }
 .allocation-form .tool-warning { padding: 8px; color: var(--color-navy); background: rgba(252, 163, 17, .2); }
 .allocation-form .tool-submit { align-self: end; }
+.bucket-balance-total { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 13px; padding: 10px; border-radius: 7px; color: rgba(20, 33, 61, .7); background: rgba(20, 33, 61, .06); font-size: 9px; }
+.bucket-balance-total strong { color: var(--color-navy); font-size: 15px; }
+.bucket-form { padding-bottom: 13px; }
+.bucket-list { display: grid; }
+.bucket-row { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(125px, .8fr) auto 22px; align-items: end; gap: 8px; padding: 9px 0; border-top: 1px solid rgba(20, 33, 61, .1); }
+.bucket-row > div:first-child { display: grid; gap: 4px; min-width: 0; align-self: center; }
+.bucket-row > div:first-child strong { overflow: hidden; color: var(--color-navy); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.bucket-row > div:first-child span { color: rgba(20, 33, 61, .64); font-size: 8px; }
+.weekly-limit-amount { margin: 0 0 13px; color: var(--color-navy); font-size: 27px; font-weight: 700; }
+.weekly-limit-amount span { color: rgba(20, 33, 61, .65); font-size: 10px; font-weight: 500; letter-spacing: 0; }
+.weekly-limit-form { grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
 .schedule-form > .tool-field { margin-bottom: 1px; }
 .upcoming-list, .goal-tool-list, .debt-list { display: grid; gap: 8px; margin-top: 17px; }
 .upcoming-list h3 { margin: 0 0 2px; color: var(--color-navy); font-size: 11px; }
@@ -516,6 +527,11 @@ h1, h2, p { margin-top: 0; }
   .debt-row { grid-template-columns: minmax(0, 1fr) auto; }
   .debt-balance-field { grid-column: 1 / 2; }
   .debt-row-actions { grid-column: 2 / 3; grid-row: 2; }
+  .bucket-row { grid-template-columns: minmax(0, 1fr) auto 22px; }
+  .bucket-row .tool-field { grid-column: 1 / 2; }
+  .bucket-row > .secondary-button { grid-column: 2 / 3; grid-row: 2; }
+  .bucket-row > .tool-delete { grid-column: 3 / 4; grid-row: 2; }
+  .weekly-limit-form { grid-template-columns: 1fr; }
   .upcoming-row { grid-template-columns: 60px minmax(50px, 1fr) auto 18px; gap: 5px; font-size: 8px; }
   .scheduled-row { grid-template-columns: 54px minmax(55px, 1fr) 43px auto 18px; gap: 4px; font-size: 7px; }
   .allocation-form, .two-column-form { gap: 8px; }
